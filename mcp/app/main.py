@@ -1,6 +1,7 @@
 """Open Wearables MCP Server - Main entry point."""
 
 import logging
+import sys
 from datetime import date
 
 from fastmcp import FastMCP
@@ -22,9 +23,34 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+auth_provider = None
+if settings.mcp_transport == "http":
+    if settings.mcp_oauth_password.get_secret_value():
+        from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
+
+        from app.oauth import SinglePasswordOAuthProvider
+
+        auth_provider = SinglePasswordOAuthProvider(
+            base_url=settings.mcp_public_url,
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+            revocation_options=RevocationOptions(enabled=True),
+        )
+    elif settings.mcp_bearer_token.get_secret_value():
+        from app.auth import SharedSecretVerifier
+
+        auth_provider = SharedSecretVerifier()
+    else:
+        print(
+            "Fatal: MCP_TRANSPORT=http requires MCP_OAUTH_PASSWORD or MCP_BEARER_TOKEN to be set "
+            "(the server would otherwise be reachable without authentication).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
 # Create FastMCP server instance
 mcp = FastMCP(
     "open-wearables",
+    auth=auth_provider,
     instructions=f"""
     Today's date is {date.today().isoformat()}.
 
@@ -130,7 +156,10 @@ logger.info(f"Open Wearables MCP server initialized. API URL: {settings.open_wea
 
 def main() -> None:
     """Entry point for the MCP server."""
-    mcp.run()
+    if settings.mcp_transport == "http":
+        mcp.run(transport="http", host=settings.mcp_host, port=settings.mcp_port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

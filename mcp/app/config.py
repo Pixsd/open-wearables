@@ -30,6 +30,26 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Logging level")
     request_timeout: int = Field(default=30, description="HTTP request timeout in seconds")
 
+    # Transport settings
+    mcp_transport: str = Field(default="stdio", description="MCP transport: 'stdio' or 'http'")
+    mcp_host: str = Field(default="127.0.0.1", description="Bind host when mcp_transport='http'")
+    mcp_port: int = Field(default=8100, description="Bind port when mcp_transport='http'")
+    mcp_bearer_token: SecretStr = Field(
+        default=SecretStr(""),
+        description="Shared bearer token required from HTTP clients. Used when mcp_transport='http' "
+        "and mcp_oauth_password is not set.",
+    )
+
+    # OAuth settings
+    mcp_oauth_password: SecretStr = Field(
+        default=SecretStr(""),
+        description="Password gating the OAuth login page. Enables OAuth mode when mcp_transport='http'.",
+    )
+    mcp_public_url: str = Field(
+        default="http://localhost:8100",
+        description="Public HTTPS URL this server is reachable at, used for OAuth issuer/redirect URLs.",
+    )
+
     def is_configured(self) -> bool:
         """Check if the API key is configured."""
         return bool(self.open_wearables_api_key.get_secret_value())

@@ -141,6 +141,9 @@ The platform's most powerful feature - define intelligent health insights using 
 ### Unified API
 Access health data through a consistent REST API regardless of the source device.
 
+### MCP Server
+Query wearable health data from AI assistants (Claude Desktop, Cursor, claude.ai) through natural language via the [Model Context Protocol](https://modelcontextprotocol.io/). Runs locally over stdio or as a remote HTTP server behind a reverse proxy. See [mcp/README.md](mcp/README.md) for setup.
+
 ### Provider Support
 - ☁️ **Cloud-based**: Garmin, Oura, Whoop, Suunto, Polar, Ultrahuman, Strava, Fitbit
 - 📱 **SDK-based**: Apple HealthKit, Samsung Health, Google Health Connect
