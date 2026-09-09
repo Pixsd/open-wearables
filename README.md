@@ -138,11 +138,16 @@ The platform's most powerful feature - define intelligent health insights using 
 - 🔄 Customizable AI models (swap models to match your needs)
 - 🔍 Natural language queries about user health metrics
 
+### MCP Server
+Query wearable health data from AI assistants using the [Model Context Protocol](https://modelcontextprotocol.io/):
+- 💬 **Natural Language Access**: Ask about steps, sleep, workouts, and more from Claude Desktop, Cursor, or claude.ai
+- 🖥️ **Local or Remote**: Runs over stdio for local desktop clients, or as an HTTP server behind a reverse proxy for remote connectors
+- 🔐 **Authenticated HTTP Mode**: Static bearer token or full OAuth 2.1 flow for remote clients
+
+See [mcp/README.md](mcp/README.md) for setup and configuration.
+
 ### Unified API
 Access health data through a consistent REST API regardless of the source device.
-
-### MCP Server
-Query wearable health data from AI assistants (Claude Desktop, Cursor, claude.ai) through natural language via the [Model Context Protocol](https://modelcontextprotocol.io/). Runs locally over stdio or as a remote HTTP server behind a reverse proxy. See [mcp/README.md](mcp/README.md) for setup.
 
 ### Provider Support
 - ☁️ **Cloud-based**: Garmin, Oura, Whoop, Suunto, Polar, Ultrahuman, Strava, Fitbit
