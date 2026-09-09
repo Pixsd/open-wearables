@@ -99,7 +99,7 @@ MCP_HOST=127.0.0.1
 MCP_PORT=8100
 ```
 
-Bind to `127.0.0.1` and put a reverse proxy (TLS) in front - don't expose the port directly. `docker compose up -d mcp` builds and runs it as part of the main stack.
+Bind to `127.0.0.1` and put a reverse proxy (TLS) in front - don't expose the port directly. `docker compose up -d mcp` builds and runs it as part of the main stack - transport/host/port are fixed to `http`/`0.0.0.0`/`8100` in that case (see `docker-compose.yml`), so `MCP_TRANSPORT`/`MCP_HOST`/`MCP_PORT` in `.env` only apply when running the server directly (`uv run start`).
 
 ### Authentication
 

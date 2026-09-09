@@ -40,7 +40,12 @@ class _PendingAuthorization:
 
 
 class SinglePasswordOAuthProvider(OAuthProvider):
-    """OAuth authorization server backed by one shared password."""
+    """OAuth authorization server backed by one shared password.
+
+    Doesn't reuse fastmcp's InMemoryOAuthProvider: that one is documented as a
+    testing double, and it doesn't track the resource/audience restriction
+    (see _issue_tokens below) that this server needs to enforce.
+    """
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
@@ -59,11 +64,12 @@ class SinglePasswordOAuthProvider(OAuthProvider):
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         if client_info.client_id is None:
             raise ValueError("client_id is required for client registration")
+        self._gc()
         self.clients[client_info.client_id] = client_info
 
     # --- Authorization: hand off to our own login page ---
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
-        self._gc_pending()
+        self._gc()
         txn = secrets.token_urlsafe(24)
         self._pending[txn] = _PendingAuthorization(
             client=client,
@@ -73,17 +79,35 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         base = str(self.base_url).rstrip("/")
         return f"{base}/login?txn={txn}"
 
-    def _gc_pending(self) -> None:
+    def _gc(self) -> None:
+        """Sweep expired pending authorizations and access tokens.
+
+        Bounds memory growth for a long-running, unattended server - clients
+        and refresh tokens have no expiry by design (a personal deployment is
+        expected to stay connected), so those are only removed via explicit
+        revocation or rotation.
+        """
         now = time.time()
         for txn in [k for k, v in self._pending.items() if v.expires_at < now]:
             del self._pending[txn]
+        for token, access in list(self.access_tokens.items()):
+            if access.expires_at is not None and access.expires_at < now:
+                self._revoke(access=token)
 
-    def _render_login(self, txn: str, error: str | None = None) -> str:
+    def _render_login(
+        self,
+        txn: str,
+        client: OAuthClientInformationFull,
+        redirect_uri: str,
+        error: str | None = None,
+    ) -> str:
         error_box = f'<div class="info-box error"><p>{html.escape(error)}</p></div>' if error else ""
+        client_name = html.escape(client.client_name or client.client_id or "An application")
         content = f"""
             <div class="container">
                 <h1>Sign in to Open Wearables</h1>
-                <p>Authorize this application to access wearable health data.</p>
+                <p><strong>{client_name}</strong> wants to access your wearable health data.
+                   It will be redirected to <code>{html.escape(redirect_uri)}</code> once you sign in.</p>
                 {error_box}
                 <form method="post" action="/login">
                     <input type="hidden" name="txn" value="{html.escape(txn)}">
@@ -102,7 +126,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
 
     async def _handle_login_get(self, request: Request) -> HTMLResponse:
         txn = request.query_params.get("txn", "")
-        if txn not in self._pending:
+        pending = self._pending.get(txn)
+        if pending is None:
             return create_secure_html_response(
                 create_page(
                     content='<div class="container"><h1>Authorization request expired</h1>'
@@ -112,7 +137,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
                 status_code=400,
             )
         error = request.query_params.get("error")
-        return create_secure_html_response(self._render_login(txn, error))
+        login_page = self._render_login(txn, pending.client, str(pending.params.redirect_uri), error)
+        return create_secure_html_response(login_page)
 
     async def _handle_login_post(self, request: Request) -> Response:
         form = await request.form()
@@ -206,7 +232,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
         self._revoke(access=self._refresh_to_access.get(refresh_token.token), refresh=refresh_token.token)
-        return self._issue_tokens(client.client_id, scopes, None)
+        return self._issue_tokens(client.client_id, scopes, refresh_token.resource)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         access = self.access_tokens.get(token)
@@ -242,6 +268,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             client_id=client_id,
             scopes=scopes,
             expires_at=None,
+            resource=resource,
         )
         self._access_to_refresh[access_value] = refresh_value
         self._refresh_to_access[refresh_value] = access_value

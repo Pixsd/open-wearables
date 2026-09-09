@@ -230,6 +230,8 @@ services:
       - path: ./mcp/config/.env
         required: false
     environment:
+      # Fixed for the containerized deployment - override any conflicting
+      # values from mcp/config/.env, which `environment:` always wins over.
       - OPEN_WEARABLES_API_URL=http://app:8000
       - MCP_TRANSPORT=http
       - MCP_HOST=0.0.0.0
