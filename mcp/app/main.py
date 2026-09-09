@@ -160,13 +160,18 @@ mcp.mount(menstrual_cycles_router)
 # Mount prompts
 mcp.mount(prompts_router)
 
+# Set before main() so the auth provider is attached to `mcp` as soon as this
+# module is imported - e.g. by a FastMCP CLI runner that imports `mcp` and
+# never calls main() - rather than only when the server is started directly.
+if settings.mcp_transport == "http":
+    mcp.auth = _build_auth_provider()
+
 logger.info(f"Open Wearables MCP server initialized. API URL: {settings.open_wearables_api_url}")
 
 
 def main() -> None:
     """Entry point for the MCP server."""
     if settings.mcp_transport == "http":
-        mcp.auth = _build_auth_provider()
         mcp.run(transport="http", host=settings.mcp_host, port=settings.mcp_port)
     else:
         mcp.run()

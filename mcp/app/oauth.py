@@ -10,17 +10,18 @@ import secrets
 import time
 from dataclasses import dataclass
 
-from fastmcp.server.auth.auth import OAuthProvider
+from fastmcp.server.auth.auth import AccessToken, ClientRegistrationOptions, OAuthProvider, RevocationOptions
 from fastmcp.utilities.ui import INFO_BOX_STYLES, create_page, create_secure_html_response
 from mcp.server.auth.provider import (
-    AccessToken,
     AuthorizationCode,
     AuthorizationParams,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyHttpUrl
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -31,12 +32,27 @@ AUTH_CODE_EXPIRY_SECONDS = 5 * 60
 PENDING_AUTH_EXPIRY_SECONDS = 10 * 60
 ACCESS_TOKEN_EXPIRY_SECONDS = 30 * 24 * 60 * 60
 
+# A wrong password can't be retried more than this many times against a given
+# authorization attempt before the client has to restart the OAuth flow ...
+LOGIN_MAX_ATTEMPTS_PER_TXN = 5
+# ... nor more than this many times from a given address within the window,
+# which also bounds guessing across freshly-started authorization attempts.
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
+
+# Dynamic client registration (RFC 7591) is unauthenticated by design, so cap
+# how many clients it can create to bound memory growth from abuse.
+MAX_REGISTERED_CLIENTS = 100
+
 
 @dataclass
 class _PendingAuthorization:
+    """An in-flight `/authorize` request, waiting on the login form."""
+
     client: OAuthClientInformationFull
     params: AuthorizationParams
     expires_at: float
+    attempts: int = 0
 
 
 class SinglePasswordOAuthProvider(OAuthProvider):
@@ -47,28 +63,51 @@ class SinglePasswordOAuthProvider(OAuthProvider):
     (see _issue_tokens below) that this server needs to enforce.
     """
 
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(
+        self,
+        *,
+        base_url: AnyHttpUrl | str,
+        client_registration_options: ClientRegistrationOptions | None = None,
+        revocation_options: RevocationOptions | None = None,
+    ) -> None:
+        """Initialize in-memory client/token/authorization-code storage."""
+        super().__init__(
+            base_url=base_url,
+            client_registration_options=client_registration_options,
+            revocation_options=revocation_options,
+        )
         self.clients: dict[str, OAuthClientInformationFull] = {}
         self.auth_codes: dict[str, AuthorizationCode] = {}
         self.access_tokens: dict[str, AccessToken] = {}
         self.refresh_tokens: dict[str, RefreshToken] = {}
         self._access_to_refresh: dict[str, str] = {}
         self._refresh_to_access: dict[str, str] = {}
+        # RefreshToken (unlike AccessToken/AuthorizationCode) has no `resource`
+        # field, so the RFC 8707 resource indicator is tracked here instead.
+        self._refresh_resource: dict[str, str | None] = {}
         self._pending: dict[str, _PendingAuthorization] = {}
+        self._failed_logins_by_ip: dict[str, list[float]] = {}
 
     # --- Dynamic client registration (RFC 7591) ---
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        """Look up a previously registered client by ID."""
         return self.clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        """Register a new OAuth client, bounded by MAX_REGISTERED_CLIENTS."""
         if client_info.client_id is None:
-            raise ValueError("client_id is required for client registration")
+            raise RegistrationError(error="invalid_client_metadata", error_description="client_id is required")
         self._gc()
+        if len(self.clients) >= MAX_REGISTERED_CLIENTS:
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="Server has reached its maximum number of registered OAuth clients.",
+            )
         self.clients[client_info.client_id] = client_info
 
     # --- Authorization: hand off to our own login page ---
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
+        """Start an authorization attempt and return the login page URL."""
         self._gc()
         txn = secrets.token_urlsafe(24)
         self._pending[txn] = _PendingAuthorization(
@@ -93,6 +132,28 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         for token, access in list(self.access_tokens.items()):
             if access.expires_at is not None and access.expires_at < now:
                 self._revoke(access=token)
+        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+        for ip in list(self._failed_logins_by_ip):
+            attempts = [t for t in self._failed_logins_by_ip[ip] if t > cutoff]
+            if attempts:
+                self._failed_logins_by_ip[ip] = attempts
+            else:
+                del self._failed_logins_by_ip[ip]
+
+    def _record_failed_login(self, client_ip: str) -> None:
+        """Record a failed login attempt from an address for rate limiting."""
+        now = time.time()
+        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+        attempts = [t for t in self._failed_logins_by_ip.get(client_ip, []) if t > cutoff]
+        attempts.append(now)
+        self._failed_logins_by_ip[client_ip] = attempts
+
+    def _is_login_rate_limited(self, client_ip: str) -> bool:
+        """Check whether an address has too many recent failed login attempts."""
+        now = time.time()
+        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+        attempts = [t for t in self._failed_logins_by_ip.get(client_ip, []) if t > cutoff]
+        return len(attempts) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
 
     def _render_login(
         self,
@@ -101,6 +162,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         redirect_uri: str,
         error: str | None = None,
     ) -> str:
+        """Render the password login page for a pending authorization."""
         error_box = f'<div class="info-box error"><p>{html.escape(error)}</p></div>' if error else ""
         client_name = html.escape(client.client_name or client.client_id or "An application")
         content = f"""
@@ -125,6 +187,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return create_page(content=content, title="Sign in", additional_styles=INFO_BOX_STYLES)
 
     async def _handle_login_get(self, request: Request) -> HTMLResponse:
+        """Serve the login page for a pending authorization transaction."""
         txn = request.query_params.get("txn", "")
         pending = self._pending.get(txn)
         if pending is None:
@@ -141,6 +204,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return create_secure_html_response(login_page)
 
     async def _handle_login_post(self, request: Request) -> Response:
+        """Validate the submitted password and issue an authorization code."""
         form = await request.form()
         txn = str(form.get("txn", ""))
         password = str(form.get("password", ""))
@@ -155,9 +219,22 @@ class SinglePasswordOAuthProvider(OAuthProvider):
                 status_code=400,
             )
 
+        client_ip = request.client.host if request.client else "unknown"
+        base = str(self.base_url).rstrip("/")
+        if self._is_login_rate_limited(client_ip) or pending.attempts >= LOGIN_MAX_ATTEMPTS_PER_TXN:
+            return create_secure_html_response(
+                create_page(
+                    content='<div class="container"><h1>Too many attempts</h1>'
+                    "<p>Please wait and reconnect from your MCP client.</p></div>",
+                    title="Too many attempts",
+                ),
+                status_code=429,
+            )
+
         expected = settings.mcp_oauth_password.get_secret_value()
         if not expected or not hmac.compare_digest(password, expected):
-            base = str(self.base_url).rstrip("/")
+            pending.attempts += 1
+            self._record_failed_login(client_ip)
             return RedirectResponse(f"{base}/login?txn={txn}&error=Incorrect+password", status_code=303)
 
         del self._pending[txn]
@@ -180,6 +257,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return RedirectResponse(redirect_uri, status_code=303)
 
     def get_routes(self, mcp_path: str | None = None) -> list[Route]:
+        """Add the login page routes to the standard OAuth server routes."""
         routes = super().get_routes(mcp_path)
         routes.append(Route("/login", endpoint=self._handle_login_get, methods=["GET"]))
         routes.append(Route("/login", endpoint=self._handle_login_post, methods=["POST"]))
@@ -191,6 +269,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         authorization_code: str,
     ) -> AuthorizationCode | None:
+        """Look up a still-valid authorization code issued to this client."""
         code = self.auth_codes.get(authorization_code)
         if code is None:
             return None
@@ -204,6 +283,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         authorization_code: AuthorizationCode,
     ) -> OAuthToken:
+        """Redeem a one-time authorization code for an access/refresh token pair."""
         if authorization_code.code not in self.auth_codes:
             raise TokenError("invalid_grant", "Authorization code not found or already used.")
         del self.auth_codes[authorization_code.code]
@@ -216,6 +296,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         refresh_token: str,
     ) -> RefreshToken | None:
+        """Look up a refresh token previously issued to this client."""
         token = self.refresh_tokens.get(refresh_token)
         if token is None or token.client_id != client.client_id:
             return None
@@ -227,14 +308,17 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
+        """Rotate a refresh token for a new access/refresh token pair."""
         if not set(scopes).issubset(set(refresh_token.scopes)):
             raise TokenError("invalid_scope", "Requested scopes exceed those authorized by the refresh token.")
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
+        resource = self._refresh_resource.get(refresh_token.token)
         self._revoke(access=self._refresh_to_access.get(refresh_token.token), refresh=refresh_token.token)
-        return self._issue_tokens(client.client_id, scopes, refresh_token.resource)
+        return self._issue_tokens(client.client_id, scopes, resource)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
+        """Look up a still-valid access token, revoking it if it has expired."""
         access = self.access_tokens.get(token)
         if access is None:
             return None
@@ -244,15 +328,18 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return access
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        """Validate a bearer token for the TokenVerifier protocol."""
         return await self.load_access_token(token)
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        """Revoke an access or refresh token, and its linked counterpart."""
         if isinstance(token, AccessToken):
             self._revoke(access=token.token)
         else:
             self._revoke(refresh=token.token)
 
     def _issue_tokens(self, client_id: str, scopes: list[str], resource: str | None) -> OAuthToken:
+        """Mint and store a fresh access/refresh token pair."""
         access_value = secrets.token_hex(32)
         refresh_value = secrets.token_hex(32)
         expires_at = int(time.time() + ACCESS_TOKEN_EXPIRY_SECONDS)
@@ -263,13 +350,15 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             expires_at=expires_at,
             resource=resource,
         )
+        # RefreshToken has no `resource` field - tracked separately so it can
+        # be carried over to the next access token on rotation.
         self.refresh_tokens[refresh_value] = RefreshToken(
             token=refresh_value,
             client_id=client_id,
             scopes=scopes,
             expires_at=None,
-            resource=resource,
         )
+        self._refresh_resource[refresh_value] = resource
         self._access_to_refresh[access_value] = refresh_value
         self._refresh_to_access[refresh_value] = access_value
         return OAuthToken(
@@ -281,14 +370,17 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         )
 
     def _revoke(self, access: str | None = None, refresh: str | None = None) -> None:
+        """Revoke an access and/or refresh token, and its linked counterpart."""
         if access and access in self.access_tokens:
             del self.access_tokens[access]
             linked_refresh = self._access_to_refresh.pop(access, None)
             if linked_refresh:
                 self.refresh_tokens.pop(linked_refresh, None)
+                self._refresh_resource.pop(linked_refresh, None)
                 self._refresh_to_access.pop(linked_refresh, None)
         if refresh and refresh in self.refresh_tokens:
             del self.refresh_tokens[refresh]
+            self._refresh_resource.pop(refresh, None)
             linked_access = self._refresh_to_access.pop(refresh, None)
             if linked_access:
                 self.access_tokens.pop(linked_access, None)
