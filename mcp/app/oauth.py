@@ -6,10 +6,12 @@ connected clients need to reauthorize.
 
 import hmac
 import html
+import logging
 import secrets
 import time
 from dataclasses import dataclass
 
+import httpx
 from fastmcp.server.auth.auth import AccessToken, ClientRegistrationOptions, OAuthProvider, RevocationOptions
 from fastmcp.utilities.ui import INFO_BOX_STYLES, create_page, create_secure_html_response
 from mcp.server.auth.provider import (
@@ -27,6 +29,29 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def _touch_mcp_client(client_id: str, client_name: str | None) -> None:
+    """Best-effort notify the backend dashboard that an OAuth client registered or logged in.
+
+    Never raises: a dashboard hiccup must not break the actual OAuth flow for the user.
+    """
+    api_key = settings.open_wearables_api_key.get_secret_value()
+    if not api_key:
+        return
+    url = f"{settings.open_wearables_api_url.rstrip('/')}/api/v1/mcp-clients/touch"
+    try:
+        async with httpx.AsyncClient(timeout=5) as http_client:
+            response = await http_client.post(
+                url,
+                json={"client_id": client_id, "client_name": client_name},
+                headers={"X-Open-Wearables-API-Key": api_key},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError:
+        logger.warning(f"Failed to report MCP client {client_id!r} to the dashboard", exc_info=True)
 
 AUTH_CODE_EXPIRY_SECONDS = 5 * 60
 PENDING_AUTH_EXPIRY_SECONDS = 10 * 60
@@ -241,6 +266,10 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         client, params = pending.client, pending.params
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
+
+        # Only report on a verified login, not on registration - DCR is unauthenticated
+        # by design, so a bare registration proves nothing about who's actually connecting.
+        await _touch_mcp_client(client.client_id, client.client_name)
 
         code_value = secrets.token_hex(32)
         self.auth_codes[code_value] = AuthorizationCode(
