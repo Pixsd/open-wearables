@@ -1,11 +1,12 @@
 """Google Health API 24/7 handler.
 
-Drives Google's fetch operations from one registry. Granularity (default RAW) picks the
-tier: DAILY/HOURLY use ``dataPoints:rollUp`` (windowed aggregates); RAW uses a
-native-resolution operation chosen by ``google_use_reconcile`` — ``dataPoints:reconcile``
-(one merged, deduplicated stream across sources, matching the native health app) or
-``dataPoints`` list (raw per-source points with device attribution). Sleep and workouts
-come from the sessions endpoint and are handled separately.
+Drives Google's fetch operations from one registry. Every metric is read at native
+resolution by the operation ``google_use_reconcile`` picks — ``dataPoints:reconcile`` (one
+merged, deduplicated stream across sources, matching the native health app) or ``dataPoints``
+list (raw per-source points with device attribution). Windowed ``dataPoints:rollUp`` is
+disabled (#1577) and the configured granularity no longer selects it; ``dataPoints:dailyRollUp``
+still backs the derived daily metrics. Sleep and workouts come from the sessions endpoint and
+are handled separately.
 """
 
 from collections.abc import Iterator
@@ -37,7 +38,7 @@ from app.schemas.providers.google import (
     TimeShape,
 )
 from app.services.providers.api_client import make_authenticated_request
-from app.services.providers.google.health_api.helpers import (
+from app.services.providers.google_health.helpers import (
     GOOGLE_HEALTH_API_SOURCE,
     civil_interval,
     extract_source,
@@ -48,8 +49,8 @@ from app.services.providers.google.health_api.helpers import (
     read_number,
     zone_offset_from,
 )
-from app.services.providers.google.health_api.metrics import DERIVED_DAILY_METRICS, METRICS
-from app.services.providers.google.health_api.sleep import GoogleHealthApiSleep
+from app.services.providers.google_health.metrics import DERIVED_DAILY_METRICS, METRICS
+from app.services.providers.google_health.sleep import GoogleHealthApiSleep
 from app.services.providers.templates.base_247_data import Base247DataTemplate
 from app.services.providers.templates.base_oauth import BaseOAuthTemplate
 from app.services.raw_payload_storage import store_raw_payload
@@ -58,15 +59,26 @@ from app.utils.sentry_helpers import log_and_capture_error
 from app.utils.structured_logging import log_structured
 
 
+class UnsupportedGranularityError(RuntimeError):
+    """The configured granularity needs the windowed rollUp operation, which is disabled."""
+
+    def __init__(self, granularity: DataGranularity):
+        super().__init__(
+            f"Google Health data_granularity '{granularity.value}' needs the windowed rollUp "
+            "operation, which is disabled (#1577). Its data types were skipped; set the provider's "
+            "granularity to 'raw' to resume them. Sleep and derived daily totals are unaffected."
+        )
+
+
 class GoogleHealth247Data(Base247DataTemplate):
-    """Fetches Google 24/7 metrics (rollUp + list) and persists them as DataPointSeries."""
+    """Fetches Google 24/7 metrics (list/reconcile + dailyRollUp) and persists them as DataPointSeries."""
 
     # rollUp enforces windowSize * pageSize <= the data type's max range; list default page.
     MAX_PAGE_SIZE = 10_000
     LIST_PAGE_SIZE = 1_000
 
     def __init__(self, oauth: BaseOAuthTemplate, connection_repo: UserConnectionRepository, api_base_url: str):
-        super().__init__(provider_name="google", api_base_url=api_base_url, oauth=oauth)
+        super().__init__(provider_name="google_health", api_base_url=api_base_url, oauth=oauth)
         self.connection_repo = connection_repo
         self.settings_repo = ProviderSettingsRepository()
         self.sleep = GoogleHealthApiSleep(oauth, connection_repo, api_base_url)
@@ -89,25 +101,31 @@ class GoogleHealth247Data(Base247DataTemplate):
         failures: dict[str, str] = {}
         succeeded = 0
 
-        for metric in METRICS:
-            # Confine each metric (fetch + write) to a savepoint so a failed write rolls
-            # back only that metric and leaves the transaction usable for the rest.
-            try:
-                with db.begin_nested():
-                    if metric.use_list(granularity):
-                        samples = self._native_samples(db, user_id, metric, start_time, end_time)
-                    else:
-                        samples = self._rollup_samples(db, user_id, metric, start_time, end_time, granularity)
-                    counts = timeseries_service.bulk_create_samples(db, samples) if samples else None
-                db.commit()
-            except Exception as e:
-                db.rollback()
-                self._log_metric_failure(metric.data_type, user_id, e)
-                failures[metric.data_type] = str(e)
-                continue
-            succeeded += 1
-            if counts is not None:
-                results[metric.data_type] = counts
+        # These types can only be read at native resolution now, so an aggregating granularity
+        # cannot be honoured — skip them rather than quietly storing raw rows against the
+        # setting. The raise waits until the work that does not aggregate has had its turn.
+        granularity_supported = granularity is DataGranularity.RAW
+
+        if granularity_supported:
+            for metric in METRICS:
+                # Confine each metric (fetch + write) to a savepoint so a failed write rolls
+                # back only that metric and leaves the transaction usable for the rest.
+                try:
+                    with db.begin_nested():
+                        if metric.use_list(granularity):
+                            samples = self._native_samples(db, user_id, metric, start_time, end_time)
+                        else:
+                            samples = self._rollup_samples(db, user_id, metric, start_time, end_time, granularity)
+                        counts = timeseries_service.bulk_create_samples(db, samples) if samples else None
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+                    self._log_metric_failure(metric.data_type, user_id, e)
+                    failures[metric.data_type] = str(e)
+                    continue
+                succeeded += 1
+                if counts is not None:
+                    results[metric.data_type] = counts
 
         for derived in DERIVED_DAILY_METRICS:
             try:
@@ -135,6 +153,8 @@ class GoogleHealth247Data(Base247DataTemplate):
             failures["sleep"] = str(e)
             sleep_count = 0
 
+        if not granularity_supported:
+            raise UnsupportedGranularityError(granularity)
         # Every attempted data type failed (e.g. ACCOUNT_NOT_LINKED) — surface it so the sync
         # is marked FAILED rather than an empty success. A partial/empty run returns normally.
         if failures and not succeeded:
@@ -164,7 +184,8 @@ class GoogleHealth247Data(Base247DataTemplate):
 
         Returns None when ``data_type`` is not a registered metric. Sleep and exercise
         are owned by their own handlers and are routed there by the webhook handler
-        before ever reaching here, so an unrecognised type is a safe no-op.
+        before ever reaching here, so an unrecognised type is a safe no-op. Raises
+        UnsupportedGranularityError, which the webhook handler reports without a 5xx.
         """
         metric = next((m for m in METRICS if m.data_type == data_type), None)
         if metric is None:
@@ -172,6 +193,8 @@ class GoogleHealth247Data(Base247DataTemplate):
         granularity = (
             self.settings_repo.get_data_granularity(db, self.provider_name) or settings.default_data_granularity
         )
+        if granularity is not DataGranularity.RAW:
+            raise UnsupportedGranularityError(granularity)
         if metric.use_list(granularity):
             samples = self._native_samples(db, user_id, metric, start_time, end_time)
         else:
@@ -201,7 +224,10 @@ class GoogleHealth247Data(Base247DataTemplate):
         end_time: datetime,
         granularity: DataGranularity,
     ) -> list[TimeSeriesSampleCreate]:
-        """Roll up one metric at the granularity's window and map to samples."""
+        """Roll up one metric at the granularity's window and map to samples.
+
+        Unreachable while ``use_list`` is pinned to True; kept for when window starts are floored.
+        """
         spec = metric.rollup_spec
         if spec is None:
             return []
@@ -521,7 +547,7 @@ class GoogleHealth247Data(Base247DataTemplate):
             # or bucketed /timeseries reads would drop the daily rows as "totals" (see daily_total_flag).
             is_daily_total=daily_total_flag(series_type, is_daily_total),
             external_id=(
-                f"{series_type.value}:{recorded_at.isoformat()}" if series_type is SeriesType.energy else None
+                f"{series_type.value}:{recorded_at.isoformat()}" if series_type is SeriesType.active_energy else None
             ),
         )
 
