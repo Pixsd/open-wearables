@@ -1,5 +1,6 @@
 import json
 import time
+from collections import Counter
 from collections.abc import Generator
 from datetime import datetime
 from decimal import Decimal
@@ -86,6 +87,7 @@ class LoadDataResult(TypedDict):
     types: list[str]  # series types written
     sleep_saved: int
     dropped: list[InvalidRecord]
+    unsupported_types: dict[str, int]  # record types with no series mapping, skipped
     validation_ms: float
 
 
@@ -381,7 +383,6 @@ class ImportService:
             return EventRecordMetrics(), [], None
 
         stats_dict: dict[str, Decimal | int] = {}
-        stats_dict["energy_burned"] = Decimal("0")
         time_series_samples: list[TimeSeriesSampleCreate] = []
         duration: float | None = None
 
@@ -424,7 +425,9 @@ class ImportService:
                     | WorkoutStatisticType.CALORIES
                     | WorkoutStatisticType.TOTAL_CALORIES
                 ):
-                    stats_dict["energy_burned"] += value
+                    # Summed across the energy statistics, and left unset when the payload reports none
+                    energy = stats_dict.get("energy_burned")
+                    stats_dict["energy_burned"] = value if energy is None else energy + value
                 case _:
                     detail_field = get_detail_field_from_workout_statistic_type(stat.type)
                     if detail_field:
@@ -476,6 +479,12 @@ class ImportService:
                 nutrient_records.setdefault(rjson.parentId, []).append(rjson)
             else:
                 records.append(rjson)
+
+        # Types this backend can't map (e.g. sent by a newer SDK) are skipped while
+        # building samples; count them so the summary log shows what was dropped.
+        unsupported_types = Counter(
+            rjson.type or "" for rjson in records if get_series_type_from_metric_type(rjson.type or "") is None
+        )
 
         # Process meals in batch
         meal_bundles = list(self._build_meal_bundles(correlation_records, nutrient_records, request.provider, user_id))
@@ -536,6 +545,7 @@ class ImportService:
             "types": sorted(types),
             "sleep_saved": sleep_saved,
             "dropped": dropped,
+            "unsupported_types": dict(unsupported_types),
             "validation_ms": validation_ms,
         }
 
@@ -603,6 +613,7 @@ class ImportService:
                 records_updated=saved_counts["records_updated"],
                 workouts_saved=saved_counts["workouts_saved"],
                 sleep_saved=saved_counts["sleep_saved"],
+                unsupported_types=saved_counts["unsupported_types"],
                 validation_ms=saved_counts["validation_ms"],
             )
 
