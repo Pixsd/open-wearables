@@ -14,6 +14,7 @@ export default defineConfig({
 		host: '0.0.0.0',
 		port: 3000,
 		strictPort: true,
+		allowedHosts: ['fit.pxserver.org'],
 		// inotify does not fire reliably for files delivered by `docker compose
 		// watch`, so fall back to polling inside the container only — polling on a
 		// developer machine just burns CPU.
