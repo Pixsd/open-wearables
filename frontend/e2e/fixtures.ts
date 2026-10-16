@@ -1547,7 +1547,25 @@ const buildInvitations = () => [
 	}
 ];
 
+const buildMcpClients = () => [
+	{
+		id: 'mcp_1',
+		client_id: 'claude-ai-7f3a9c',
+		client_name: 'Claude',
+		last_seen_at: '2026-10-15T09:30:00Z',
+		created_at: '2026-09-10T08:00:00Z'
+	},
+	{
+		id: 'mcp_2',
+		client_id: 'anon-client-41d2e8',
+		client_name: null,
+		last_seen_at: '2026-09-20T12:00:00Z',
+		created_at: '2026-09-20T12:00:00Z'
+	}
+];
+
 let API_KEYS = buildApiKeys();
+let MCP_CLIENTS = buildMcpClients();
 let APPLICATIONS = buildApplications();
 let PRIORITIES = buildPriorities();
 let DEVELOPERS = buildDevelopers();
@@ -1557,6 +1575,7 @@ export const resetSettings = () => {
 	PROVIDER_SETTINGS = buildProviderSettings();
 	LIVE_SYNC_CALLS = 0;
 	API_KEYS = buildApiKeys();
+	MCP_CLIENTS = buildMcpClients();
 	APPLICATIONS = buildApplications();
 	PRIORITIES = buildPriorities();
 	DEVELOPERS = buildDevelopers();
@@ -1594,6 +1613,14 @@ export const deleteApiKey = (id: string) => {
 	const before = API_KEYS.length;
 	API_KEYS = API_KEYS.filter((key) => key.id !== id);
 	return API_KEYS.length < before;
+};
+
+export const listMcpClients = () => MCP_CLIENTS;
+
+export const forgetMcpClient = (id: string) => {
+	const before = MCP_CLIENTS.length;
+	MCP_CLIENTS = MCP_CLIENTS.filter((client) => client.id !== id);
+	return MCP_CLIENTS.length < before;
 };
 
 export const listApplications = () => APPLICATIONS;

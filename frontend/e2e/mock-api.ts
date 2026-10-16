@@ -12,9 +12,11 @@ import {
 	createApplication,
 	createInvitation,
 	deleteApiKey,
+	forgetMcpClient,
 	deleteApplication,
 	deleteDeveloper,
 	listApiKeys,
+	listMcpClients,
 	listApplications,
 	listDevelopers,
 	listDeviceTypePriorities,
@@ -375,6 +377,17 @@ const server = Bun.serve({
 				return json(createApiKey(name), 201);
 			}
 			return json(listApiKeys());
+		}
+
+		const mcpMatch = pathname.match(/^\/api\/v1\/mcp-clients\/([^/]+)$/);
+		if (mcpMatch && request.method === 'DELETE') {
+			return forgetMcpClient(mcpMatch[1])
+				? new Response(null, { status: 204 })
+				: json({ detail: 'Not found' }, 404);
+		}
+
+		if (pathname === '/api/v1/mcp-clients') {
+			return json(listMcpClients());
 		}
 
 		const appMatch = pathname.match(/^\/api\/v1\/applications\/([^/]+)(\/rotate-secret)?$/);

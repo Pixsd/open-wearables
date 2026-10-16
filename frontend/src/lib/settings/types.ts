@@ -19,6 +19,15 @@ export type Application = {
 
 export type ApplicationSecret = Application & { app_secret: string };
 
+/** Mirrors `McpClientRead`: an OAuth client that signed in to the self-hosted MCP server. */
+export type McpClient = {
+	id: string;
+	client_id: string;
+	client_name: string | null;
+	last_seen_at: string;
+	created_at: string;
+};
+
 /** Mirrors `ProviderSettingRead`. */
 export type ProviderSetting = {
 	provider: string;

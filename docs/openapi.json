@@ -9856,6 +9856,137 @@
         }
       }
     },
+    "/api/v1/mcp-clients": {
+      "get": {
+        "tags": [
+          "Internal: MCP Clients"
+        ],
+        "summary": "List Mcp Clients",
+        "description": "List MCP OAuth clients that have registered or authenticated against this deployment.\n\nBearer-token connections have no per-client identity, so only OAuth (claude.ai-style\nconnectors) clients show up here.",
+        "operationId": "list_mcp_clients_api_v1_mcp_clients_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/McpClientRead"
+                  },
+                  "type": "array",
+                  "title": "Response List Mcp Clients Api V1 Mcp Clients Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/mcp-clients/touch": {
+      "post": {
+        "tags": [
+          "Internal: MCP Clients"
+        ],
+        "summary": "Touch Mcp Client",
+        "description": "Record an MCP client registration or successful login.\n\nCalled by the self-hosted MCP server itself (authenticating with its own configured\nAPI key), not by dashboard users - hence ApiKeyDep rather than DeveloperDep.",
+        "operationId": "touch_mcp_client_api_v1_mcp_clients_touch_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Open-Wearables-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Open-Wearables-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpClientTouch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/mcp-clients/{id}": {
+      "delete": {
+        "tags": [
+          "Internal: MCP Clients"
+        ],
+        "summary": "Forget Mcp Client",
+        "description": "Remove an MCP client from this list.\n\nThis only forgets the record here - it does not revoke the client's live OAuth\nregistration/tokens on the MCP server, which keeps its own in-memory state. If the\nclient reconnects, it will simply reappear.",
+        "operationId": "forget_mcp_client_api_v1_mcp_clients__id__delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/dashboard/stats": {
       "get": {
         "tags": [
@@ -13835,6 +13966,77 @@
         },
         "type": "object",
         "title": "Macros"
+      },
+      "McpClientRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "client_id": {
+            "type": "string",
+            "title": "Client Id"
+          },
+          "client_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Name"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Seen At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "client_id",
+          "client_name",
+          "last_seen_at",
+          "created_at"
+        ],
+        "title": "McpClientRead",
+        "description": "Schema for reading an McpClient."
+      },
+      "McpClientTouch": {
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Client Id"
+          },
+          "client_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "client_id"
+        ],
+        "title": "McpClientTouch",
+        "description": "Schema the MCP server posts on client registration and on each successful login."
       },
       "Meal": {
         "properties": {

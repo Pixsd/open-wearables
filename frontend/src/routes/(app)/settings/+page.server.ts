@@ -1,12 +1,15 @@
 import { attempt, field } from '$lib/server/form';
 import { requireToken } from '$lib/server/guard';
+import { optional } from '$lib/server/optional';
 import {
 	createApiKey,
 	createApplication,
 	deleteApiKey,
 	deleteApplication,
+	forgetMcpClient,
 	listApiKeys,
 	listApplications,
+	listMcpClients,
 	renameApiKey,
 	rotateApiKey,
 	rotateApplicationSecret
@@ -17,12 +20,14 @@ import type { Actions, PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals }) => {
 	const accessToken = await requireToken(locals);
 
-	const [keys, applications] = await Promise.all([
+	const [keys, applications, mcpClients] = await Promise.all([
 		listApiKeys(accessToken),
-		listApplications(accessToken)
+		listApplications(accessToken),
+		// An instance without the MCP server has nothing to list, and that is not a reason to lose the keys.
+		optional(listMcpClients(accessToken), [])
 	]);
 
-	return { keys, applications };
+	return { keys, applications, mcpClients };
 };
 
 /**
@@ -113,5 +118,12 @@ export const actions: Actions = {
 		const appId = field(await request.formData(), 'appId');
 
 		return attempt('deleteApp', { appId }, () => deleteApplication(appId, accessToken));
+	},
+
+	forgetMcpClient: async ({ request, locals }) => {
+		const accessToken = await requireToken(locals);
+		const id = field(await request.formData(), 'id');
+
+		return attempt('forgetMcpClient', { id }, () => forgetMcpClient(id, accessToken));
 	}
 };

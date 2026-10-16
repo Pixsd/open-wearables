@@ -83,6 +83,23 @@ test('deletes an API key after confirming', async ({ page }) => {
 	await expect(page.getByText('No API keys yet')).toBeVisible();
 });
 
+test('lists the MCP clients that signed in, named or not', async ({ page }) => {
+	await page.goto('/settings');
+
+	await expect(page.getByText('Claude', { exact: true })).toBeVisible();
+	await expect(page.getByText('Unnamed client')).toBeVisible();
+});
+
+test('forgets an MCP client after confirming, and only that one', async ({ page }) => {
+	await page.goto('/settings');
+
+	await page.getByRole('button', { name: 'Forget Claude' }).click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Forget' }).click();
+
+	await expect(page.getByRole('button', { name: 'Forget Claude' })).toHaveCount(0);
+	await expect(page.getByText('Unnamed client')).toBeVisible();
+});
+
 test('holds provider switches as a draft until they are saved', async ({ page }) => {
 	await page.goto('/settings/providers');
 
