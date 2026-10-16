@@ -2,7 +2,6 @@
 	import ApiEndpoint from '$lib/components/settings/credentials/ApiEndpoint.svelte';
 	import ApiKeys from '$lib/components/settings/credentials/ApiKeys.svelte';
 	import Applications from '$lib/components/settings/credentials/Applications.svelte';
-	import McpClients from '$lib/components/settings/credentials/McpClients.svelte';
 	import type { ActionData, PageData } from './$types';
 	import { messageFrom } from '$lib/utils/forms.svelte';
 
@@ -26,6 +25,4 @@
 		{messageFor}
 		secret={secretFrom(['createApp', 'rotateApp'])}
 	/>
-
-	<McpClients clients={data.mcpClients} {messageFor} />
 </div>

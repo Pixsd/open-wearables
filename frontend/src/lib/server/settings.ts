@@ -8,7 +8,6 @@ import type {
 	Developer,
 	DeviceTypePriority,
 	Invitation,
-	McpClient,
 	ProviderPriority,
 	ProviderSetting
 } from '$lib/settings/types';
@@ -17,7 +16,6 @@ const KEYS = '/api/v1/developer/api-keys';
 const APPS = '/api/v1/applications';
 const PROVIDERS = '/api/v1/oauth/providers';
 const INVITATIONS = '/api/v1/invitations';
-const MCP_CLIENTS = '/api/v1/mcp-clients';
 
 export const listApiKeys = (accessToken: string) => apiGet<ApiKey[]>(KEYS, accessToken);
 
@@ -43,12 +41,6 @@ export const rotateApplicationSecret = (appId: string, accessToken: string) =>
 
 export const deleteApplication = (appId: string, accessToken: string) =>
 	apiDelete(`${APPS}/${appId}`, accessToken);
-
-export const listMcpClients = (accessToken: string) =>
-	apiGet<McpClient[]>(MCP_CLIENTS, accessToken);
-
-export const forgetMcpClient = (id: string, accessToken: string) =>
-	apiDelete(`${MCP_CLIENTS}/${id}`, accessToken);
 
 /** Every provider, enabled or not: this is the page that decides which. */
 export const listProviderSettings = async (accessToken: string) =>
