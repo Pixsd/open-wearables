@@ -12,7 +12,6 @@ from .event_record import EventRecord
 from .event_record_detail import DetailType, EventRecordDetail
 from .health_score import HealthScore
 from .invitation import Invitation
-from .mcp_client import McpClient
 from .meal_details import MealDetails
 from .menstrual_cycle_details import MenstrualCycleDetails
 from .personal_record import PersonalRecord
@@ -46,7 +45,6 @@ __all__ = [
     "DataPointSeriesArchive",
     "DeviceTypePriority",
     "Invitation",
-    "McpClient",
     "ProviderPriority",
     "ProviderSetting",
     "RefreshToken",
