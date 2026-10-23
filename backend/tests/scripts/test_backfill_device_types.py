@@ -78,3 +78,25 @@ class TestBackfillDeviceTypes:
 
         assert ipad.device_type == "tablet"
         assert iphone.device_type == "phone"
+
+    def test_recomputes_third_party_rows_keyed_by_host(self, db: Session) -> None:
+        oura = DataSourceFactory(
+            provider=ProviderName.APPLE,
+            device_model="iPhone16,1",
+            source="Oura",
+            source_app_id="com.ouraring.oura",
+            device_type="phone",
+        )
+
+        preview = backfill_device_types(db, dry_run=True)
+
+        assert preview["apple: phone -> ring"] == 1
+        db.refresh(oura)
+        assert oura.device_type == "phone"
+
+        backfill_device_types(db, dry_run=False)
+
+        db.flush()
+        db.refresh(oura)
+        assert oura.device_type == "ring"
+        assert not backfill_device_types(db, dry_run=False)
