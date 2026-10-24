@@ -258,6 +258,9 @@ services:
       - MCP_TRANSPORT=http
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8100
+      - MCP_STATE_FILE=/data/oauth_state.json
+    volumes:
+      - mcp_data:/data
     ports:
       - "127.0.0.1:${MCP_PORT:-8100}:8100"
     depends_on:
@@ -274,3 +277,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  mcp_data:

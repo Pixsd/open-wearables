@@ -50,6 +50,11 @@ class Settings(BaseSettings):
         default="http://localhost:8100",
         description="Public HTTPS URL this server is reachable at, used for OAuth issuer/redirect URLs.",
     )
+    mcp_state_file: str = Field(
+        default="",
+        description="JSON file where OAuth clients and tokens are persisted so they survive restarts. "
+        "Empty keeps them in memory only.",
+    )
 
     def is_configured(self) -> bool:
         """Check if the API key is configured."""

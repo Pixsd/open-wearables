@@ -30,7 +30,7 @@ FROM python:3.13-slim
     ENV UV_NO_SYNC=true
 
     RUN useradd --create-home --shell /usr/sbin/nologin --uid 1000 mcp \
-        && chown -R mcp:mcp /opt/venv /root_project
+        && mkdir /data && chown -R mcp:mcp /opt/venv /root_project /data
     USER mcp
 
     EXPOSE 8100

@@ -110,6 +110,8 @@ HTTP mode requires one of the following (the server refuses to start without eit
 
 If both are set, `MCP_OAUTH_PASSWORD` takes priority.
 
+Set `MCP_STATE_FILE` (e.g. `/data/oauth_state.json`, backed by a volume) to persist registered clients and tokens, so connected clients stay authorized across restarts. Without it they are kept in memory and must reauthorize after every restart. The bundled `docker-compose.yml` already sets this.
+
 ### Connecting from claude.ai
 
 claude.ai's custom connectors only support the OAuth flow, not a bearer token, so run the server with `MCP_OAUTH_PASSWORD` and `MCP_PUBLIC_URL` set.

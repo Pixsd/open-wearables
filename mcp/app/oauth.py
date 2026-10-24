@@ -1,15 +1,19 @@
 """Self-contained OAuth 2.1 authorization server, gated by a single password.
 
-State (clients, codes, tokens) is kept in memory; a restart just means
-connected clients need to reauthorize.
+Registered clients and access/refresh tokens are persisted to `state_file`
+(when set) so connected clients stay authorized across restarts. Short-lived
+state (pending logins, authorization codes, login rate limits) stays in memory.
 """
 
 import hmac
 import html
+import json
 import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastmcp.server.auth.auth import AccessToken, ClientRegistrationOptions, OAuthProvider, RevocationOptions
 from fastmcp.utilities.ui import INFO_BOX_STYLES, create_page, create_secure_html_response
@@ -73,8 +77,9 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         base_url: AnyHttpUrl | str,
         client_registration_options: ClientRegistrationOptions | None = None,
         revocation_options: RevocationOptions | None = None,
+        state_file: str | Path | None = None,
     ) -> None:
-        """Initialize in-memory client/token/authorization-code storage."""
+        """Initialize client/token/authorization-code storage, restoring persisted state if any."""
         super().__init__(
             base_url=base_url,
             client_registration_options=client_registration_options,
@@ -91,6 +96,47 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         self._refresh_resource: dict[str, str | None] = {}
         self._pending: dict[str, _PendingAuthorization] = {}
         self._failed_logins_by_ip: dict[str, list[float]] = {}
+        self._state_file = Path(state_file) if state_file else None
+        self._load_state()
+
+    # --- Persistence ---
+    def _load_state(self) -> None:
+        """Restore clients and tokens from the state file; start empty if it is missing or unreadable."""
+        if self._state_file is None or not self._state_file.exists():
+            return
+        try:
+            data = json.loads(self._state_file.read_text())
+            self.clients = {k: OAuthClientInformationFull.model_validate(v) for k, v in data["clients"].items()}
+            self.access_tokens = {k: AccessToken.model_validate(v) for k, v in data["access_tokens"].items()}
+            self.refresh_tokens = {k: RefreshToken.model_validate(v) for k, v in data["refresh_tokens"].items()}
+            self._access_to_refresh = data["access_to_refresh"]
+            self._refresh_to_access = data["refresh_to_access"]
+            self._refresh_resource = data["refresh_resource"]
+        except (OSError, ValueError, KeyError):
+            logger.warning("Could not read OAuth state from %s, starting empty", self._state_file, exc_info=True)
+            self.clients, self.access_tokens, self.refresh_tokens = {}, {}, {}
+            self._access_to_refresh, self._refresh_to_access, self._refresh_resource = {}, {}, {}
+
+    def _save_state(self) -> None:
+        """Atomically write clients and tokens to the state file (owner-only permissions)."""
+        if self._state_file is None:
+            return
+        data = {
+            "clients": {k: v.model_dump(mode="json") for k, v in self.clients.items()},
+            "access_tokens": {k: v.model_dump(mode="json") for k, v in self.access_tokens.items()},
+            "refresh_tokens": {k: v.model_dump(mode="json") for k, v in self.refresh_tokens.items()},
+            "access_to_refresh": self._access_to_refresh,
+            "refresh_to_access": self._refresh_to_access,
+            "refresh_resource": self._refresh_resource,
+        }
+        tmp = self._state_file.with_name(self._state_file.name + ".tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, self._state_file)
+        except OSError:
+            logger.warning("Could not write OAuth state to %s", self._state_file, exc_info=True)
 
     # --- Dynamic client registration (RFC 7591) ---
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
@@ -108,6 +154,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
                 error_description="Server has reached its maximum number of registered OAuth clients.",
             )
         self.clients[client_info.client_id] = client_info
+        self._save_state()
 
     # --- Authorization: hand off to our own login page ---
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
@@ -365,6 +412,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         self._refresh_resource[refresh_value] = resource
         self._access_to_refresh[access_value] = refresh_value
         self._refresh_to_access[refresh_value] = access_value
+        self._save_state()
         return OAuthToken(
             access_token=access_value,
             token_type="Bearer",
@@ -389,3 +437,4 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             if linked_access:
                 self.access_tokens.pop(linked_access, None)
                 self._access_to_refresh.pop(linked_access, None)
+        self._save_state()
