@@ -13,12 +13,14 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastmcp.server.auth.auth import AccessToken, ClientRegistrationOptions, OAuthProvider, RevocationOptions
 from fastmcp.utilities.ui import INFO_BOX_STYLES, create_page, create_secure_html_response
 from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     RefreshToken,
     RegistrationError,
     TokenError,
@@ -34,6 +36,9 @@ from app.auth import secrets_match
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# RFC 8707 error for an unknown resource. Older SDK versions leave it out of AuthorizeError's Literal.
+_INVALID_TARGET: Any = "invalid_target"
 
 
 AUTH_CODE_EXPIRY_SECONDS = 5 * 60
@@ -51,6 +56,10 @@ LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
 # Dynamic client registration (RFC 7591) is unauthenticated by design, so cap
 # how many clients it can create to bound memory growth from abuse.
 MAX_REGISTERED_CLIENTS = 100
+# Every /authorize call stores a pending login until it expires, and it needs no password, so bound
+# how many can wait at once overall and per client.
+MAX_PENDING_AUTHORIZATIONS = 200
+MAX_PENDING_AUTHORIZATIONS_PER_CLIENT = 10
 # A registered client that never completes an authorization is dropped after this
 # long, so unauthenticated registrations cannot fill the cap for good.
 UNUSED_CLIENT_EXPIRY_SECONDS = 60 * 60
@@ -175,7 +184,15 @@ class SinglePasswordOAuthProvider(OAuthProvider):
     # --- Authorization: hand off to our own login page ---
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         """Start an authorization attempt and return the login page URL."""
+        if not self._resource_matches(params.resource):
+            raise AuthorizeError(error=_INVALID_TARGET, error_description="Unknown resource.")
         self._gc()
+        waiting_for_client = sum(1 for p in self._pending.values() if p.client.client_id == client.client_id)
+        if (
+            len(self._pending) >= MAX_PENDING_AUTHORIZATIONS
+            or waiting_for_client >= MAX_PENDING_AUTHORIZATIONS_PER_CLIENT
+        ):
+            raise AuthorizeError(error="temporarily_unavailable", error_description="Too many pending authorizations.")
         txn = secrets.token_urlsafe(24)
         self._pending[txn] = _PendingAuthorization(
             client=client,
@@ -184,6 +201,10 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         )
         base = str(self.base_url).rstrip("/")
         return f"{base}/login?txn={txn}"
+
+    def _resource_matches(self, resource: str | None) -> bool:
+        """RFC 8707: a request or token that names a resource must name this server's MCP endpoint."""
+        return not resource or str(resource).rstrip("/") == f"{str(self.base_url).rstrip('/')}/mcp"
 
     def _gc(self) -> None:
         """Sweep expired pending authorizations, access tokens and unused clients.
@@ -262,7 +283,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
                 <p><strong>{client_name}</strong> wants to access your wearable health data.
                    It will be redirected to <code>{html.escape(redirect_uri)}</code> once you sign in.</p>
                 {error_box}
-                <form method="post" action="/login">
+                <form method="post" action="{html.escape(str(self.base_url).rstrip("/"))}/login">
                     <input type="hidden" name="txn" value="{html.escape(txn)}">
                     <input type="password" name="password" placeholder="Password" autofocus required
                            style="width:100%;padding:.6rem;margin:1rem 0;border:1px solid #e5e7eb;
@@ -414,6 +435,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if access.expires_at is not None and access.expires_at < time.time():
             self._expire_access(token)
             self._save_state()
+            return None
+        if not self._resource_matches(access.resource):
             return None
         return access
 
