@@ -141,7 +141,11 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             self._access_to_refresh, self._refresh_to_access, self._refresh_resource = {}, {}, {}
 
     def _save_state(self) -> None:
-        """Atomically write clients and tokens to the state file (owner-only permissions)."""
+        """Atomically write clients and tokens to the state file (owner-only permissions).
+
+        Raises OSError when it cannot be written, so a token operation is not reported as done
+        (a revocation, say) while the file on disk still holds the old state.
+        """
         if self._state_file is None:
             return
         data = {
@@ -153,13 +157,17 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             "refresh_resource": self._refresh_resource,
         }
         tmp = self._state_file.with_name(self._state_file.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._state_file)
+
+    def _save_state_best_effort(self) -> None:
+        """Persist after housekeeping that need not be durable: an expired entry is dead either way."""
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self._state_file)
+            self._save_state()
         except OSError:
             logger.warning("Could not write OAuth state to %s", self._state_file, exc_info=True)
 
@@ -224,7 +232,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         for client_id in stale_clients:
             del self.clients[client_id]
         if expired or stale_clients:
-            self._save_state()
+            self._save_state_best_effort()
         for ip in list(self._failed_logins_by_ip):
             attempts = self._recent_failures(ip)
             if attempts:
@@ -434,7 +442,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             return None
         if access.expires_at is not None and access.expires_at < time.time():
             self._expire_access(token)
-            self._save_state()
+            self._save_state_best_effort()
             return None
         if not self._resource_matches(access.resource):
             return None

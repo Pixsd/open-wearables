@@ -3,6 +3,7 @@
 import stat
 from pathlib import Path
 
+import pytest
 from mcp.shared.auth import OAuthClientInformationFull
 
 from app.oauth import SinglePasswordOAuthProvider
@@ -57,3 +58,36 @@ async def test_state_with_unexpected_shape_is_kept_aside_not_overwritten(tmp_pat
 
     assert (tmp_path / "oauth_state.json.corrupt").exists()
     assert "c1" in _provider(state_file).clients
+
+
+async def test_failed_write_is_not_reported_as_a_successful_revocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _provider(tmp_path / "oauth_state.json")
+    issued = provider._issue_tokens("c1", [], None)
+    access = await provider.load_access_token(issued.access_token)
+    assert access is not None
+
+    def broken_replace(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.oauth.os.replace", broken_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        await provider.revoke_token(access)
+    # Fail closed: the token stays unusable in memory even though the file still lists it.
+    assert await provider.load_access_token(issued.access_token) is None
+
+
+async def test_housekeeping_does_not_fail_when_the_write_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _provider(tmp_path / "oauth_state.json")
+    issued = provider._issue_tokens("c1", [], None)
+    provider.access_tokens[issued.access_token].expires_at = 1
+
+    def broken_replace(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.oauth.os.replace", broken_replace)
+
+    assert await provider.load_access_token(issued.access_token) is None
+    provider._gc()
