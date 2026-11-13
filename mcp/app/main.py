@@ -58,6 +58,21 @@ def _build_auth_provider() -> AuthProvider:
     sys.exit(1)
 
 
+def _auth_provider_or_none() -> AuthProvider | None:
+    """Return the auth provider, or None when running without secrets over stdio.
+
+    Attached whenever MCP_TRANSPORT=http or a secret is configured, so a runner that picks HTTP itself
+    (`fastmcp run app/main.py:mcp --transport http`) cannot serve the backend without authentication.
+    """
+    if (
+        settings.mcp_transport == "http"
+        or settings.mcp_oauth_password.get_secret_value()
+        or settings.mcp_bearer_token.get_secret_value()
+    ):
+        return _build_auth_provider()
+    return None
+
+
 # Create FastMCP server instance
 mcp = FastMCP(
     "open-wearables",
@@ -165,8 +180,8 @@ mcp.mount(prompts_router)
 # Set before main() so the auth provider is attached to `mcp` as soon as this
 # module is imported - e.g. by a FastMCP CLI runner that imports `mcp` and
 # never calls main() - rather than only when the server is started directly.
-if settings.mcp_transport == "http":
-    mcp.auth = _build_auth_provider()
+if (auth_provider := _auth_provider_or_none()) is not None:
+    mcp.auth = auth_provider
 
 logger.info(f"Open Wearables MCP server initialized. API URL: {settings.open_wearables_api_url}")
 
