@@ -180,9 +180,11 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         now = time.time()
         for txn in [k for k, v in self._pending.items() if v.expires_at < now]:
             del self._pending[txn]
-        for token, access in list(self.access_tokens.items()):
-            if access.expires_at is not None and access.expires_at < now:
-                self._revoke(access=token)
+        expired = [t for t, a in self.access_tokens.items() if a.expires_at is not None and a.expires_at < now]
+        for token in expired:
+            self._expire_access(token)
+        if expired:
+            self._save_state()
         cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
         for ip in list(self._failed_logins_by_ip):
             attempts = [t for t in self._failed_logins_by_ip[ip] if t > cutoff]
@@ -374,7 +376,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if access is None:
             return None
         if access.expires_at is not None and access.expires_at < time.time():
-            self._revoke(access=token)
+            self._expire_access(token)
+            self._save_state()
             return None
         return access
 
@@ -420,6 +423,13 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             refresh_token=refresh_value,
             scope=" ".join(scopes),
         )
+
+    def _expire_access(self, token: str) -> None:
+        """Drop an expired access token, keeping its refresh token so the client can renew it."""
+        self.access_tokens.pop(token, None)
+        linked_refresh = self._access_to_refresh.pop(token, None)
+        if linked_refresh:
+            self._refresh_to_access.pop(linked_refresh, None)
 
     def _revoke(self, access: str | None = None, refresh: str | None = None) -> None:
         """Revoke an access and/or refresh token, and its linked counterpart."""
