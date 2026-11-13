@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import SecretStr
+from starlette.requests import Request
 
 from app.auth import SharedSecretVerifier
 from app.config import settings
@@ -53,3 +54,25 @@ async def test_bearer_verifier_handles_non_ascii_tokens(monkeypatch: pytest.Monk
 
     assert await verifier.verify_token("sécret-tøken") is not None
     assert await verifier.verify_token("wrong-é") is None
+
+
+def _request(headers: dict[str, str], peer: str = "172.18.0.1") -> Request:
+    scope = {
+        "type": "http",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": (peer, 1234),
+    }
+    return Request(scope)
+
+
+def test_client_ip_is_the_socket_peer_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "mcp_client_ip_header", "")
+
+    assert SinglePasswordOAuthProvider._client_ip(_request({"X-Forwarded-For": "9.9.9.9"})) == "172.18.0.1"
+
+
+def test_client_ip_uses_the_configured_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "mcp_client_ip_header", "X-Forwarded-For")
+
+    assert SinglePasswordOAuthProvider._client_ip(_request({"X-Forwarded-For": "6.6.6.6, 1.2.3.4"})) == "1.2.3.4"
+    assert SinglePasswordOAuthProvider._client_ip(_request({})) == "172.18.0.1"

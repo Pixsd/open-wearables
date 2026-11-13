@@ -193,6 +193,15 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             else:
                 del self._failed_logins_by_ip[ip]
 
+    @staticmethod
+    def _client_ip(request: Request) -> str:
+        """Address used to rate limit logins: the configured proxy header if present, else the socket peer."""
+        header = settings.mcp_client_ip_header
+        if header and (value := request.headers.get(header)):
+            # With a list (X-Forwarded-For) the last entry is the one the nearest proxy appended.
+            return value.split(",")[-1].strip()
+        return request.client.host if request.client else "unknown"
+
     def _record_failed_login(self, client_ip: str) -> None:
         """Record a failed login attempt from an address for rate limiting."""
         now = time.time()
@@ -272,7 +281,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
                 status_code=400,
             )
 
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = self._client_ip(request)
         base = str(self.base_url).rstrip("/")
         if self._is_login_rate_limited(client_ip) or pending.attempts >= LOGIN_MAX_ATTEMPTS_PER_TXN:
             return create_secure_html_response(

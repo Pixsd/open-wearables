@@ -112,6 +112,8 @@ If both are set, `MCP_OAUTH_PASSWORD` takes priority.
 
 Set `MCP_STATE_FILE` (e.g. `/data/oauth_state.json`, backed by a volume) to persist registered clients and tokens, so connected clients stay authorized across restarts. Without it they are kept in memory and must reauthorize after every restart. The bundled `docker-compose.yml` already sets this.
 
+Behind a reverse proxy every request comes from the proxy's address, so the login rate limit would be shared by everyone. Set `MCP_CLIENT_IP_HEADER` to a header the proxy sets or overwrites with the real client address (for example `CF-Connecting-IP` behind Cloudflare, or `X-Forwarded-For`; the last entry of a list is used) so attempts are limited per client. Leave it empty if no proxy sets such a header.
+
 ### Connecting from claude.ai
 
 claude.ai's custom connectors only support the OAuth flow, not a bearer token, so run the server with `MCP_OAUTH_PASSWORD` and `MCP_PUBLIC_URL` set.

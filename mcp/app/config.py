@@ -50,6 +50,12 @@ class Settings(BaseSettings):
         default="http://localhost:8100",
         description="Public HTTPS URL this server is reachable at, used for OAuth issuer/redirect URLs.",
     )
+    mcp_client_ip_header: str = Field(
+        default="",
+        description="Request header carrying the real client address (e.g. CF-Connecting-IP), used to rate limit "
+        "login attempts per client. Only set it when a reverse proxy in front sets or overwrites that header. "
+        "Empty uses the socket peer, which is the proxy itself when one is in front.",
+    )
     mcp_state_file: str = Field(
         default="",
         description="JSON file where OAuth clients and tokens are persisted so they survive restarts. "
