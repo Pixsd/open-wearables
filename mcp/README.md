@@ -108,7 +108,7 @@ HTTP mode requires one of the following (the server refuses to start without eit
 - **`MCP_BEARER_TOKEN`** - a static shared secret sent as `Authorization: Bearer <token>`. Simplest option, works with clients that let you paste in a token (MCPJam, most HTTP MCP clients). Generate with `openssl rand -hex 32`.
 - **`MCP_OAUTH_PASSWORD`** - a self-contained OAuth 2.1 flow (dynamic client registration + a password-gated login page). Required for clients that only support remote OAuth connectors, such as claude.ai custom connectors. Also set `MCP_PUBLIC_URL` to the server's public HTTPS URL, used for the OAuth issuer/redirect URLs. Generate the password with `openssl rand -hex 24`.
 
-If both are set, `MCP_OAUTH_PASSWORD` takes priority.
+If both are set, `MCP_OAUTH_PASSWORD` takes priority. Set one even if you start the server through a runner such as `fastmcp run app/main.py:mcp --transport http`: the secrets are what attach authentication, so without one that endpoint is unprotected.
 
 Set `MCP_STATE_FILE` (e.g. `/data/oauth_state.json`, backed by a volume) to persist registered clients and tokens, so connected clients stay authorized across restarts. Without it they are kept in memory and must reauthorize after every restart. The bundled `docker-compose.yml` already sets this.
 
