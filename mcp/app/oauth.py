@@ -222,7 +222,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
 
     def _unused_client_ids(self, now: float) -> list[str]:
         """Clients registered long ago that hold no token and have no authorization in flight."""
-        in_use = {t.client_id for t in self.access_tokens.values()}
+        in_use: set[str | None] = {t.client_id for t in self.access_tokens.values()}
         in_use |= {t.client_id for t in self.refresh_tokens.values()}
         in_use |= {c.client_id for c in self.auth_codes.values()}
         in_use |= {p.client.client_id for p in self._pending.values()}
