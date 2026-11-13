@@ -247,6 +247,9 @@ services:
       dockerfile: Dockerfile
     container_name: mcp__open-wearables
     image: open-wearables-mcp:latest
+    # Opt-in: HTTP mode refuses to start without MCP_OAUTH_PASSWORD or MCP_BEARER_TOKEN, so a plain
+    # `docker compose up` must not start it. `docker compose up -d mcp` or COMPOSE_PROFILES=mcp enables it.
+    profiles: ["mcp"]
     pull_policy: never
     env_file:
       - path: ./mcp/config/.env

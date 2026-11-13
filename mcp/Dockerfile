@@ -14,7 +14,7 @@ FROM python:3.13-slim AS builder
 
     # Copy source and install the project itself (fast, deps already cached)
     COPY . .
-    RUN uv sync --locked --no-dev --no-editable
+    RUN uv sync --locked --no-dev
 
 FROM python:3.13-slim
 
