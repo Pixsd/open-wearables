@@ -1,5 +1,6 @@
 """Behaviour of the OAuth provider's token lifecycle, login and registration."""
 
+import time
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from starlette.requests import Request
 
 from app.auth import SharedSecretVerifier
 from app.config import settings
-from app.oauth import SinglePasswordOAuthProvider
+from app.oauth import UNUSED_CLIENT_EXPIRY_SECONDS, SinglePasswordOAuthProvider
 
 
 def _provider(state_file: Path | None = None) -> SinglePasswordOAuthProvider:
@@ -76,3 +77,29 @@ def test_client_ip_uses_the_configured_header(monkeypatch: pytest.MonkeyPatch) -
 
     assert SinglePasswordOAuthProvider._client_ip(_request({"X-Forwarded-For": "6.6.6.6, 1.2.3.4"})) == "1.2.3.4"
     assert SinglePasswordOAuthProvider._client_ip(_request({})) == "172.18.0.1"
+
+
+async def test_unused_clients_expire_so_registration_cannot_be_filled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.oauth.MAX_REGISTERED_CLIENTS", 2)
+    provider = _provider()
+    stale = int(time.time()) - 2 * UNUSED_CLIENT_EXPIRY_SECONDS
+    for client_id in ("squat-1", "squat-2"):
+        client = _client(client_id)
+        client.client_id_issued_at = stale
+        await provider.register_client(client)
+
+    await provider.register_client(_client("claude"))
+
+    assert set(provider.clients) == {"claude"}
+
+
+async def test_client_holding_a_token_is_kept() -> None:
+    provider = _provider()
+    client = _client("c1")
+    client.client_id_issued_at = int(time.time()) - 2 * UNUSED_CLIENT_EXPIRY_SECONDS
+    await provider.register_client(client)
+    provider._issue_tokens("c1", [], None)
+
+    provider._gc()
+
+    assert "c1" in provider.clients

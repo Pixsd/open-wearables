@@ -51,6 +51,9 @@ LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
 # Dynamic client registration (RFC 7591) is unauthenticated by design, so cap
 # how many clients it can create to bound memory growth from abuse.
 MAX_REGISTERED_CLIENTS = 100
+# A registered client that never completes an authorization is dropped after this
+# long, so unauthenticated registrations cannot fill the cap for good.
+UNUSED_CLIENT_EXPIRY_SECONDS = 60 * 60
 
 
 @dataclass
@@ -170,12 +173,12 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return f"{base}/login?txn={txn}"
 
     def _gc(self) -> None:
-        """Sweep expired pending authorizations and access tokens.
+        """Sweep expired pending authorizations, access tokens and unused clients.
 
-        Bounds memory growth for a long-running, unattended server - clients
-        and refresh tokens have no expiry by design (a personal deployment is
-        expected to stay connected), so those are only removed via explicit
-        revocation or rotation.
+        Bounds memory growth for a long-running, unattended server. Refresh
+        tokens have no expiry by design (a personal deployment is expected to
+        stay connected), so those are only removed via explicit revocation or
+        rotation, and clients that still hold one are kept.
         """
         now = time.time()
         for txn in [k for k, v in self._pending.items() if v.expires_at < now]:
@@ -183,7 +186,10 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         expired = [t for t, a in self.access_tokens.items() if a.expires_at is not None and a.expires_at < now]
         for token in expired:
             self._expire_access(token)
-        if expired:
+        stale_clients = self._unused_client_ids(now)
+        for client_id in stale_clients:
+            del self.clients[client_id]
+        if expired or stale_clients:
             self._save_state()
         cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
         for ip in list(self._failed_logins_by_ip):
@@ -201,6 +207,19 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             # With a list (X-Forwarded-For) the last entry is the one the nearest proxy appended.
             return value.split(",")[-1].strip()
         return request.client.host if request.client else "unknown"
+
+    def _unused_client_ids(self, now: float) -> list[str]:
+        """Clients registered long ago that hold no token and have no authorization in flight."""
+        in_use = {t.client_id for t in self.access_tokens.values()}
+        in_use |= {t.client_id for t in self.refresh_tokens.values()}
+        in_use |= {c.client_id for c in self.auth_codes.values()}
+        in_use |= {p.client.client_id for p in self._pending.values()}
+        cutoff = now - UNUSED_CLIENT_EXPIRY_SECONDS
+        return [
+            client_id
+            for client_id, client in self.clients.items()
+            if client_id not in in_use and (client.client_id_issued_at or 0) < cutoff
+        ]
 
     def _record_failed_login(self, client_ip: str) -> None:
         """Record a failed login attempt from an address for rate limiting."""
