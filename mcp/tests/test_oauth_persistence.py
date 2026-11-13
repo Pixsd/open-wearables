@@ -45,3 +45,15 @@ async def test_corrupt_state_file_starts_empty(tmp_path: Path) -> None:
     provider = _provider(state_file)
     assert provider.clients == {}
     assert provider.access_tokens == {}
+    assert (tmp_path / "oauth_state.json.corrupt").read_text() == "not json"
+
+
+async def test_state_with_unexpected_shape_is_kept_aside_not_overwritten(tmp_path: Path) -> None:
+    state_file = tmp_path / "oauth_state.json"
+    state_file.write_text('{"clients": null, "access_tokens": {}, "refresh_tokens": {}}')
+
+    provider = _provider(state_file)
+    await provider.register_client(OAuthClientInformationFull(client_id="c1", redirect_uris=["https://claude.ai/cb"]))
+
+    assert (tmp_path / "oauth_state.json.corrupt").exists()
+    assert "c1" in _provider(state_file).clients

@@ -115,8 +115,19 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             self._access_to_refresh = data["access_to_refresh"]
             self._refresh_to_access = data["refresh_to_access"]
             self._refresh_resource = data["refresh_resource"]
-        except (OSError, ValueError, KeyError):
-            logger.warning("Could not read OAuth state from %s, starting empty", self._state_file, exc_info=True)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # Keep the unreadable file: starting empty and saving would otherwise overwrite it for good.
+            corrupt = self._state_file.with_name(self._state_file.name + ".corrupt")
+            logger.warning(
+                "Could not read OAuth state from %s, moving it to %s and starting empty",
+                self._state_file,
+                corrupt,
+                exc_info=True,
+            )
+            try:
+                os.replace(self._state_file, corrupt)
+            except OSError:
+                logger.warning("Could not move the unreadable OAuth state aside", exc_info=True)
             self.clients, self.access_tokens, self.refresh_tokens = {}, {}, {}
             self._access_to_refresh, self._refresh_to_access, self._refresh_resource = {}, {}, {}
 
@@ -137,6 +148,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self._state_file)
         except OSError:
             logger.warning("Could not write OAuth state to %s", self._state_file, exc_info=True)
