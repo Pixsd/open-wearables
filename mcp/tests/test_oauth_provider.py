@@ -4,13 +4,14 @@ import time
 from pathlib import Path
 
 import pytest
+from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import SecretStr
+from pydantic import AnyUrl, SecretStr
 from starlette.requests import Request
 
 from app.auth import SharedSecretVerifier
 from app.config import settings
-from app.oauth import UNUSED_CLIENT_EXPIRY_SECONDS, SinglePasswordOAuthProvider
+from app.oauth import UNUSED_CLIENT_EXPIRY_SECONDS, SinglePasswordOAuthProvider, _PendingAuthorization
 
 
 def _provider(state_file: Path | None = None) -> SinglePasswordOAuthProvider:
@@ -103,3 +104,20 @@ async def test_client_holding_a_token_is_kept() -> None:
     provider._gc()
 
     assert "c1" in provider.clients
+
+
+async def test_login_page_for_an_expired_transaction_is_refused() -> None:
+    provider = _provider()
+    params = AuthorizationParams(
+        state="s",
+        scopes=[],
+        code_challenge="x",
+        redirect_uri=AnyUrl("https://claude.ai/cb"),
+        redirect_uri_provided_explicitly=True,
+    )
+    provider._pending["t"] = _PendingAuthorization(client=_client(), params=params, expires_at=1)
+    request = Request({"type": "http", "headers": [], "query_string": b"txn=t"})
+
+    response = await provider._handle_login_get(request)
+
+    assert response.status_code == 400

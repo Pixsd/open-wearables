@@ -204,9 +204,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             del self.clients[client_id]
         if expired or stale_clients:
             self._save_state()
-        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
         for ip in list(self._failed_logins_by_ip):
-            attempts = [t for t in self._failed_logins_by_ip[ip] if t > cutoff]
+            attempts = self._recent_failures(ip)
             if attempts:
                 self._failed_logins_by_ip[ip] = attempts
             else:
@@ -234,20 +233,18 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             if client_id not in in_use and (client.client_id_issued_at or 0) < cutoff
         ]
 
+    def _recent_failures(self, client_ip: str) -> list[float]:
+        """Failed login timestamps from an address that are still inside the rate limit window."""
+        cutoff = time.time() - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+        return [t for t in self._failed_logins_by_ip.get(client_ip, []) if t > cutoff]
+
     def _record_failed_login(self, client_ip: str) -> None:
         """Record a failed login attempt from an address for rate limiting."""
-        now = time.time()
-        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
-        attempts = [t for t in self._failed_logins_by_ip.get(client_ip, []) if t > cutoff]
-        attempts.append(now)
-        self._failed_logins_by_ip[client_ip] = attempts
+        self._failed_logins_by_ip[client_ip] = [*self._recent_failures(client_ip), time.time()]
 
     def _is_login_rate_limited(self, client_ip: str) -> bool:
         """Check whether an address has too many recent failed login attempts."""
-        now = time.time()
-        cutoff = now - LOGIN_RATE_LIMIT_WINDOW_SECONDS
-        attempts = [t for t in self._failed_logins_by_ip.get(client_ip, []) if t > cutoff]
-        return len(attempts) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+        return len(self._recent_failures(client_ip)) >= LOGIN_RATE_LIMIT_MAX_ATTEMPTS
 
     def _render_login(
         self,
@@ -280,19 +277,24 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         """
         return create_page(content=content, title="Sign in", additional_styles=INFO_BOX_STYLES)
 
+    @staticmethod
+    def _expired_response() -> HTMLResponse:
+        """Page shown when a login transaction is unknown or has expired."""
+        return create_secure_html_response(
+            create_page(
+                content='<div class="container"><h1>Authorization request expired</h1>'
+                "<p>Please reconnect from your MCP client.</p></div>",
+                title="Expired",
+            ),
+            status_code=400,
+        )
+
     async def _handle_login_get(self, request: Request) -> HTMLResponse:
         """Serve the login page for a pending authorization transaction."""
         txn = request.query_params.get("txn", "")
         pending = self._pending.get(txn)
-        if pending is None:
-            return create_secure_html_response(
-                create_page(
-                    content='<div class="container"><h1>Authorization request expired</h1>'
-                    "<p>Please reconnect from your MCP client.</p></div>",
-                    title="Expired",
-                ),
-                status_code=400,
-            )
+        if pending is None or pending.expires_at < time.time():
+            return self._expired_response()
         error = request.query_params.get("error")
         login_page = self._render_login(txn, pending.client, str(pending.params.redirect_uri), error)
         return create_secure_html_response(login_page)
@@ -304,14 +306,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         password = str(form.get("password", ""))
         pending = self._pending.get(txn)
         if pending is None or pending.expires_at < time.time():
-            return create_secure_html_response(
-                create_page(
-                    content='<div class="container"><h1>Authorization request expired</h1>'
-                    "<p>Please reconnect from your MCP client.</p></div>",
-                    title="Expired",
-                ),
-                status_code=400,
-            )
+            return self._expired_response()
 
         client_ip = self._client_ip(request)
         base = str(self.base_url).rstrip("/")
@@ -334,7 +329,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         del self._pending[txn]
         client, params = pending.client, pending.params
         if client.client_id is None:
-            raise TokenError("invalid_client", "Client ID is required")
+            return self._expired_response()
 
         code_value = secrets.token_hex(32)
         self.auth_codes[code_value] = AuthorizationCode(
