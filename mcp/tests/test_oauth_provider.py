@@ -2,8 +2,12 @@
 
 from pathlib import Path
 
+import pytest
 from mcp.shared.auth import OAuthClientInformationFull
+from pydantic import SecretStr
 
+from app.auth import SharedSecretVerifier
+from app.config import settings
 from app.oauth import SinglePasswordOAuthProvider
 
 
@@ -41,3 +45,11 @@ async def test_gc_keeps_refresh_token_of_expired_access_token() -> None:
 
     assert issued.access_token not in provider.access_tokens
     assert issued.refresh_token in provider.refresh_tokens
+
+
+async def test_bearer_verifier_handles_non_ascii_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "mcp_bearer_token", SecretStr("sécret-tøken"))
+    verifier = SharedSecretVerifier()
+
+    assert await verifier.verify_token("sécret-tøken") is not None
+    assert await verifier.verify_token("wrong-é") is None

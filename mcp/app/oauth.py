@@ -5,7 +5,6 @@ Registered clients and access/refresh tokens are persisted to `state_file`
 state (pending logins, authorization codes, login rate limits) stays in memory.
 """
 
-import hmac
 import html
 import json
 import logging
@@ -31,6 +30,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from app.auth import secrets_match
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -285,7 +285,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             )
 
         expected = settings.mcp_oauth_password.get_secret_value()
-        if not expected or not hmac.compare_digest(password, expected):
+        if not expected or not secrets_match(password, expected):
             pending.attempts += 1
             self._record_failed_login(client_ip)
             return RedirectResponse(f"{base}/login?txn={txn}&error=Incorrect+password", status_code=303)
