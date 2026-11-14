@@ -26,9 +26,15 @@ HTTP mode requires one of these, and the server exits at startup without either.
   <Tab title="OAuth (claude.ai)">
     A self-contained OAuth 2.1 flow with dynamic client registration and a login page protected by one password. claude.ai connectors only support this.
 
+    Generate the password, then put its value in `config/.env`:
+
+    ```bash
+    openssl rand -hex 24
+    ```
+
     ```bash config/.env
     MCP_TRANSPORT=http
-    MCP_OAUTH_PASSWORD=<output of: openssl rand -hex 24>
+    MCP_OAUTH_PASSWORD=<the value printed above>
     MCP_PUBLIC_URL=https://mcp.example.com
     ```
 
@@ -37,9 +43,15 @@ HTTP mode requires one of these, and the server exits at startup without either.
   <Tab title="Bearer token">
     A static shared secret sent as `Authorization: Bearer <token>`, for clients that let you paste one in. Ignored if `MCP_OAUTH_PASSWORD` is set.
 
+    Generate the token, then put its value in `config/.env`:
+
+    ```bash
+    openssl rand -hex 32
+    ```
+
     ```bash config/.env
     MCP_TRANSPORT=http
-    MCP_BEARER_TOKEN=<output of: openssl rand -hex 32>
+    MCP_BEARER_TOKEN=<the value printed above>
     ```
   </Tab>
 </Tabs>
@@ -53,6 +65,8 @@ HTTP mode requires one of these, and the server exits at startup without either.
     ```bash
     docker compose up -d mcp
     ```
+
+    The container always listens on port `8100`. To publish it on another host port, set `MCP_PORT` in the root `.env` (or the shell) that Compose reads, not in `mcp/config/.env`; the mapping is `127.0.0.1:${MCP_PORT:-8100}:8100`.
 
     Without Docker, run `uv run start` from the `mcp` directory. The server listens on `MCP_HOST:MCP_PORT` (`127.0.0.1:8100` by default).
   </Step>
