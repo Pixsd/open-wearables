@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
+from mcp.server.auth.provider import AuthorizationCode, AuthorizationParams, AuthorizeError
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 from starlette.requests import Request
@@ -18,7 +18,9 @@ def _provider(state_file: Path | None = None) -> SinglePasswordOAuthProvider:
 
 
 def _client(client_id: str = "c1") -> OAuthClientInformationFull:
-    return OAuthClientInformationFull(client_id=client_id, redirect_uris=["https://claude.ai/cb"])
+    return OAuthClientInformationFull(
+        client_id=client_id, redirect_uris=["https://claude.ai/cb"], client_id_issued_at=int(time.time())
+    )
 
 
 async def test_refresh_token_outlives_expired_access_token(tmp_path: Path) -> None:
@@ -120,6 +122,7 @@ def _params(resource: str | None = None) -> AuthorizationParams:
 
 async def test_authorize_rejects_a_resource_that_is_not_this_server() -> None:
     provider = _provider()
+    await provider.register_client(_client())
 
     with pytest.raises(AuthorizeError) as error:
         await provider.authorize(_client(), _params("https://other.example/mcp"))
@@ -140,6 +143,8 @@ async def test_pending_authorizations_are_capped_per_client_and_overall(monkeypa
     monkeypatch.setattr("app.oauth.MAX_PENDING_AUTHORIZATIONS_PER_CLIENT", 2)
     monkeypatch.setattr("app.oauth.MAX_PENDING_AUTHORIZATIONS", 3)
     provider = _provider()
+    for client_id in ("a", "b", "c"):
+        await provider.register_client(_client(client_id))
     for _ in range(2):
         await provider.authorize(_client("a"), _params())
 
@@ -157,3 +162,34 @@ def test_login_form_posts_under_the_public_url_prefix() -> None:
     page = provider._render_login("txn1", _client(), "https://claude.ai/cb")
 
     assert 'action="https://example.test/wearables/login"' in page
+
+
+async def test_an_unused_client_expires_even_when_it_starts_an_authorization() -> None:
+    provider = _provider()
+    client = _client("squatter")
+    client.client_id_issued_at = int(time.time()) - 2 * UNUSED_CLIENT_EXPIRY_SECONDS
+    await provider.register_client(client)
+
+    with pytest.raises(AuthorizeError) as error:
+        await provider.authorize(client, _params())
+
+    assert error.value.error == "unauthorized_client"
+    assert "squatter" not in provider.clients
+    assert provider._pending == {}
+
+
+def test_gc_sweeps_expired_authorization_codes() -> None:
+    provider = _provider()
+    provider.auth_codes["old"] = AuthorizationCode(
+        code="old",
+        client_id="c1",
+        redirect_uri=AnyUrl("https://claude.ai/cb"),
+        redirect_uri_provided_explicitly=True,
+        scopes=[],
+        expires_at=1,
+        code_challenge="x",
+    )
+
+    provider._gc()
+
+    assert provider.auth_codes == {}

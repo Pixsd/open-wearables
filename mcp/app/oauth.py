@@ -164,6 +164,26 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             os.fsync(f.fileno())
         os.replace(tmp, self._state_file)
 
+    def _token_state(self) -> tuple[dict, ...]:
+        """Copy of the token tables, to roll back a multi-step change that fails to save."""
+        return (
+            dict(self.access_tokens),
+            dict(self.refresh_tokens),
+            dict(self._access_to_refresh),
+            dict(self._refresh_to_access),
+            dict(self._refresh_resource),
+        )
+
+    def _restore_token_state(self, state: tuple[dict, ...]) -> None:
+        """Put the token tables back as `_token_state` captured them."""
+        (
+            self.access_tokens,
+            self.refresh_tokens,
+            self._access_to_refresh,
+            self._refresh_to_access,
+            self._refresh_resource,
+        ) = state
+
     def _save_state_best_effort(self) -> None:
         """Persist after housekeeping that need not be durable: an expired entry is dead either way."""
         try:
@@ -195,6 +215,8 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if not self._resource_matches(params.resource):
             raise AuthorizeError(error=_INVALID_TARGET, error_description="Unknown resource.")
         self._gc()
+        if client.client_id not in self.clients:
+            raise AuthorizeError(error="unauthorized_client", error_description="Client registration expired.")
         waiting_for_client = sum(1 for p in self._pending.values() if p.client.client_id == client.client_id)
         if (
             len(self._pending) >= MAX_PENDING_AUTHORIZATIONS
@@ -225,12 +247,16 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         now = time.time()
         for txn in [k for k, v in self._pending.items() if v.expires_at < now]:
             del self._pending[txn]
+        for code in [k for k, v in self.auth_codes.items() if v.expires_at < now]:
+            del self.auth_codes[code]
         expired = [t for t, a in self.access_tokens.items() if a.expires_at is not None and a.expires_at < now]
         for token in expired:
             self._expire_access(token)
         stale_clients = self._unused_client_ids(now)
         for client_id in stale_clients:
             del self.clients[client_id]
+        for txn in [k for k, v in self._pending.items() if v.client.client_id in stale_clients]:
+            del self._pending[txn]
         if expired or stale_clients:
             self._save_state_best_effort()
         for ip in list(self._failed_logins_by_ip):
@@ -250,11 +276,14 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         return request.client.host if request.client else "unknown"
 
     def _unused_client_ids(self, now: float) -> list[str]:
-        """Clients registered long ago that hold no token and have no authorization in flight."""
+        """Clients registered long ago that hold no token and no unexpired authorization code.
+
+        A pending login does not keep a client alive: it needs no password, so counting it would let anyone
+        stop registered clients from ever expiring by starting an authorization for each.
+        """
         in_use: set[str | None] = {t.client_id for t in self.access_tokens.values()}
         in_use |= {t.client_id for t in self.refresh_tokens.values()}
         in_use |= {c.client_id for c in self.auth_codes.values()}
-        in_use |= {p.client.client_id for p in self._pending.values()}
         cutoff = now - UNUSED_CLIENT_EXPIRY_SECONDS
         return [
             client_id
@@ -432,8 +461,16 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
         resource = self._refresh_resource.get(refresh_token.token)
-        self._revoke(access=self._refresh_to_access.get(refresh_token.token), refresh=refresh_token.token)
-        return self._issue_tokens(client.client_id, scopes, resource)
+        snapshot = self._token_state()
+        try:
+            self._revoke(
+                access=self._refresh_to_access.get(refresh_token.token), refresh=refresh_token.token, save=False
+            )
+            return self._issue_tokens(client.client_id, scopes, resource)
+        except OSError:
+            # The rotation is one state change: put the old tokens back if the new state could not be saved.
+            self._restore_token_state(snapshot)
+            raise
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         """Look up a still-valid access token, revoking it if it has expired."""
@@ -498,7 +535,7 @@ class SinglePasswordOAuthProvider(OAuthProvider):
         if linked_refresh:
             self._refresh_to_access.pop(linked_refresh, None)
 
-    def _revoke(self, access: str | None = None, refresh: str | None = None) -> None:
+    def _revoke(self, access: str | None = None, refresh: str | None = None, *, save: bool = True) -> None:
         """Revoke an access and/or refresh token, and its linked counterpart."""
         if access and access in self.access_tokens:
             del self.access_tokens[access]
@@ -514,4 +551,5 @@ class SinglePasswordOAuthProvider(OAuthProvider):
             if linked_access:
                 self.access_tokens.pop(linked_access, None)
                 self._access_to_refresh.pop(linked_access, None)
-        self._save_state()
+        if save:
+            self._save_state()

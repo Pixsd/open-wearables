@@ -91,3 +91,26 @@ async def test_housekeeping_does_not_fail_when_the_write_fails(tmp_path: Path, m
 
     assert await provider.load_access_token(issued.access_token) is None
     provider._gc()
+
+
+async def test_refresh_rotation_that_cannot_be_saved_keeps_the_old_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _provider(tmp_path / "oauth_state.json")
+    client = OAuthClientInformationFull(client_id="c1", redirect_uris=["https://claude.ai/cb"])
+    issued = provider._issue_tokens("c1", [], None)
+    refresh = await provider.load_refresh_token(client, issued.refresh_token)
+    assert refresh is not None
+
+    def broken_replace(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.oauth.os.replace", broken_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        await provider.exchange_refresh_token(client, refresh, [])
+
+    assert await provider.load_refresh_token(client, issued.refresh_token) is not None
+    assert await provider.load_access_token(issued.access_token) is not None
+    assert len(provider.access_tokens) == 1
+    assert len(provider.refresh_tokens) == 1
