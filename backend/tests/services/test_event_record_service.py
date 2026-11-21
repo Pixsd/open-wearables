@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from app.integrations.rollup_queue import pop_dirty_days
-from app.models import DataSource, EventRecord, EventRecordAggregate, HealthScore, SleepDetails
+from app.models import DataSource, EventRecord, EventRecordAggregate, HealthScore, SleepDetails, WorkoutDetails
 from app.repositories import AggregateRepository, data_point_series_repository
 from app.repositories.data_type_coverage_repository import data_type_coverage_repository
 from app.schemas.data_type_coverage import CoverageSpan
@@ -151,8 +151,8 @@ class TestEventRecordServiceCreateDetail:
         )
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             event_record_service.create_detail(db, detail_payload, detail_type="sleep")
 
@@ -191,8 +191,8 @@ class TestEventRecordServiceBulkCreateDetails:
         ]
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_workout_created") as mock_workout,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_workout_created", autospec=True) as mock_workout,
         ):
             event_record_service.bulk_create_details(db, details, detail_type="workout")
             db.commit()
@@ -200,6 +200,41 @@ class TestEventRecordServiceBulkCreateDetails:
         assert mock_workout.call_count == 2
         dispatched_ids = {c.kwargs["record_id"] for c in mock_workout.call_args_list}
         assert dispatched_ids == {rec1.id, rec2.id}
+
+    def test_bulk_create_details_of_one_workout_twice_keeps_the_last(self, db: Session) -> None:
+        """Two deliveries of one new workout in a batch both resolve to its record."""
+        user = UserFactory()
+        start = datetime(2026, 9, 9, 6, 42, tzinfo=timezone.utc)
+        deliveries = [
+            EventRecordCreate(
+                id=uuid4(),
+                user_id=user.id,
+                source="suunto",
+                provider="suunto",
+                category="workout",
+                type="running",
+                source_name="Suunto",
+                start_datetime=start,
+                end_datetime=start + timedelta(seconds=seconds),
+                external_id="6aa10da139e69418a2fa8db1",
+            )
+            for seconds in (3426, 3425)
+        ]
+        stored = event_record_service.bulk_create(db, deliveries)
+        details = [
+            EventRecordDetailCreate(record_id=stored[delivery.id], steps_count=steps)
+            for delivery, steps in zip(deliveries, (100, 200))
+        ]
+
+        with (
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_workout_created", autospec=True) as mock_workout,
+        ):
+            event_record_service.bulk_create_details(db, details, detail_type="workout", created={deliveries[1].id})
+            db.commit()
+
+        assert db.get(WorkoutDetails, deliveries[1].id).steps_count == 200
+        assert mock_workout.call_count == 1
 
     def test_workout_webhook_pace_comes_from_distance_not_average_speed(self, db: Session) -> None:
         """average_speed is km/h for Suunto and m/s elsewhere, so pace must not be derived from it."""
@@ -215,8 +250,8 @@ class TestEventRecordServiceBulkCreateDetails:
         ]
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_workout_created") as mock_workout,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_workout_created", autospec=True) as mock_workout,
         ):
             event_record_service.bulk_create_details(db, details, detail_type="workout")
             db.commit()
@@ -231,8 +266,8 @@ class TestEventRecordServiceBulkCreateDetails:
         details = [EventRecordDetailCreate(record_id=rec.id, energy_burned=Decimal("250.0"))]
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=False),
-            patch("app.services.event_record_service.on_workout_created") as mock_workout,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=False),
+            patch("app.services.event_record_service.on_workout_created", autospec=True) as mock_workout,
         ):
             event_record_service.bulk_create_details(db, details, detail_type="workout")
             db.commit()
@@ -241,8 +276,8 @@ class TestEventRecordServiceBulkCreateDetails:
 
     def test_bulk_create_details_empty_list_is_noop(self, db: Session) -> None:
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_workout_created") as mock_workout,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_workout_created", autospec=True) as mock_workout,
         ):
             event_record_service.bulk_create_details(db, [], detail_type="workout")
             db.commit()
@@ -266,8 +301,8 @@ class TestEventRecordServiceBulkCreateDetails:
         ]
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_meal_created") as mock_meal,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_meal_created", autospec=True) as mock_meal,
         ):
             event_record_service.bulk_create_details(db, details, detail_type="meal")
             db.commit()
@@ -697,7 +732,7 @@ class TestCreateOrMergeSleep:
             db, data_source.user_id, night, self._detail(night.id), self.THRESHOLD
         )
 
-        with patch("app.services.event_record_service.on_sleep_created") as mock_sleep:
+        with patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep:
             event_record_service.create_or_merge_sleep(
                 db, data_source.user_id, nap, self._nap_detail(nap.id), self.THRESHOLD
             )
@@ -725,8 +760,10 @@ class TestCreateOrMergeSleep:
         night = self._record(data_source, self._dt(22, day=20), self._dt(6))
 
         with (
-            patch.object(event_record_service, "reclassify_sleep_naps", side_effect=RuntimeError("boom")),
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch.object(
+                event_record_service, "reclassify_sleep_naps", autospec=True, side_effect=RuntimeError("boom")
+            ),
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             event_record_service.create_or_merge_sleep(
                 db, data_source.user_id, night, self._detail(night.id), self.THRESHOLD
@@ -1306,8 +1343,8 @@ class TestCreateOrMergeSleep:
         detail = detail.model_copy(update={"sleep_stages": [stage]})
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             result = event_record_service.create_or_merge_sleep(db, data_source.user_id, record, detail, self.THRESHOLD)
 
@@ -1341,8 +1378,8 @@ class TestCreateOrMergeSleep:
         )
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             event_record_service.create_or_merge_sleep(db, data_source.user_id, record, detail, self.THRESHOLD)
 
@@ -1356,9 +1393,9 @@ class TestCreateOrMergeSleep:
         detail = self._detail(record.id)
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=False),
-            patch.object(event_record_service, "data_source_repo") as mock_repo,
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=False),
+            patch.object(event_record_service, "data_source_repo", autospec=True) as mock_repo,
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             event_record_service.create_or_merge_sleep(db, data_source.user_id, record, detail, self.THRESHOLD)
 
@@ -1393,8 +1430,8 @@ class TestCreateOrMergeSleep:
         detail = self._detail(record.id)
 
         with (
-            patch("app.services.event_record_service.svix_service.is_enabled", return_value=True),
-            patch("app.services.event_record_service.on_sleep_created") as mock_sleep,
+            patch("app.services.event_record_service.svix_service.is_enabled", autospec=True, return_value=True),
+            patch("app.services.event_record_service.on_sleep_created", autospec=True) as mock_sleep,
         ):
             result = event_record_service.create_or_merge_sleep(db, user.id, record, detail, self.THRESHOLD)
 
